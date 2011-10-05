@@ -465,124 +465,83 @@ abstract class test implements observable, adapter\aggregator, \countable
 
 						while (sizeof($this->runChild()->children) > 0)
 						{
-							$pipes = array();
+							$children = $this->children;
+							$this->children = array();
 
-							foreach ($this->children as $child)
+							foreach ($children as $testMethod => $child)
 							{
-								if (isset($child[1][1]) === true)
+								$phpStatus = proc_get_status($child[0]);
+
+								if ($phpStatus['running'] === true)
 								{
-									$pipes[] = $child[1][1];
+									$this->children[$testMethod] = $child;
 								}
-
-								if (isset($child[1][2]) === true)
+								else
 								{
-									$pipes[] = $child[1][2];
-								}
-							}
+									$child[3] .= stream_get_contents($child[1][2]);
+									fclose($child[1][2]);
 
-							$pipesUpdated = stream_select($pipes, $null, $null, $this->canRunChild() === true ? 0 : null);
+									$child[2] .= stream_get_contents($child[1][1]);
+									fclose($child[1][1]);
 
-							if ($pipesUpdated !== false && $pipesUpdated > 0)
-							{
-								$children = $this->children;
-								$this->children = array();
+									proc_close($child[0]);
 
-								foreach ($children as $testMethod => $child)
-								{
-									if (isset($child[1][2]) && in_array($child[1][2], $pipes) === true)
+									$this->currentMethod = $testMethod;
+									$this->callObservers(self::afterTestMethod);
+									$this->currentMethod = null;
+
+									switch ($phpStatus['exitcode'])
 									{
-										$child[3] .= stream_get_contents($child[1][2]);
+										case 126:
+										case 127:
+											throw new exceptions\runtime('Unable to execute test with \'' . $this->getPhpPath() . '\'');
+									}
 
-										if (feof($child[1][2]) === true)
+									$score = new score();
+
+									if ($child[2] !== '')
+									{
+										$score = @unserialize($child[2]);
+
+										if ($score instanceof score === false)
 										{
-											fclose($child[1][2]);
-											unset($child[1][2]);
+											$score = new score();
 										}
 									}
 
-									if (isset($child[1][1]) && in_array($child[1][1], $pipes) === true)
+									if ($child[3] !== '')
 									{
-										$child[2] .= stream_get_contents($child[1][1]);
-
-										if (feof($child[1][1]) === true)
+										if (preg_match_all('/([^:]+): (.+) in (.+) on line ([0-9]+)/', trim($child[3]), $errors, PREG_SET_ORDER) === 0)
 										{
-											fclose($child[1][1]);
-											unset($child[1][1]);
+											$score->addError($this->path, null, $this->class, $testMethod, 'UNKNOWN', $child[3]);
+										}
+										else foreach ($errors as $error)
+										{
+											$score->addError($this->path, null, $this->class, $testMethod, $error[1], $error[2], $error[3], $error[4]);
 										}
 									}
 
-									if (isset($child[1][1]) === true || isset($child[1][2]) === true)
+									if ($score->getFailNumber() > 0)
 									{
-										$this->children[] = $child;
+										$this->callObservers(self::fail);
 									}
-									else
+
+									if ($score->getErrorNumber() > 0)
 									{
-										$phpStatus = proc_get_status($child[0]);
-
-										while ($phpStatus['running'] == true)
-										{
-											$phpStatus = proc_get_status($child[0]);
-										}
-
-										proc_close($child[0]);
-
-										$this->currentMethod = $testMethod;
-										$this->callObservers(self::afterTestMethod);
-										$this->currentMethod = null;
-
-										switch ($phpStatus['exitcode'])
-										{
-											case 126:
-											case 127:
-												throw new exceptions\runtime('Unable to execute test with \'' . $this->getPhpPath() . '\'');
-										}
-
-										$score = new score();
-
-										if ($child[2] !== '')
-										{
-											$score = @unserialize($child[2]);
-
-											if ($score instanceof score === false)
-											{
-												$score = new score();
-											}
-										}
-
-										if ($child[3] !== '')
-										{
-											if (preg_match_all('/([^:]+): (.+) in (.+) on line ([0-9]+)/', trim($child[3]), $errors, PREG_SET_ORDER) === 0)
-											{
-												$score->addError($this->path, null, $this->class, $testMethod, 'UNKNOWN', $child[3]);
-											}
-											else foreach ($errors as $error)
-											{
-												$score->addError($this->path, null, $this->class, $testMethod, $error[1], $error[2], $error[3], $error[4]);
-											}
-										}
-
-										if ($score->getFailNumber() > 0)
-										{
-											$this->callObservers(self::fail);
-										}
-
-										if ($score->getErrorNumber() > 0)
-										{
-											$this->callObservers(self::error);
-										}
-
-										if ($score->getExceptionNumber() > 0)
-										{
-											$this->callObservers(self::exception);
-										}
-
-										if ($score->getPassNumber() > 0)
-										{
-											$this->callObservers(self::success);
-										}
-
-										$this->score->merge($score);
+										$this->callObservers(self::error);
 									}
+
+									if ($score->getExceptionNumber() > 0)
+									{
+										$this->callObservers(self::exception);
+									}
+
+									if ($score->getPassNumber() > 0)
+									{
+										$this->callObservers(self::success);
+									}
+
+									$this->score->merge($score);
 								}
 							}
 						}
