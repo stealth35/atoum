@@ -410,7 +410,7 @@ abstract class test implements observable, adapter\aggregator, \countable
 		return (isset($this->testMethods[$testMethodName]['ignore']) === true ? $this->testMethods[$testMethodName]['ignore'] : $this->ignore);
 	}
 
-	public function run(array $runTestMethods = array(), $runInChildProcess = true)
+	public function run(array $runTestMethods = array())
 	{
 		if ($this->ignore === false)
 		{
@@ -432,141 +432,131 @@ abstract class test implements observable, adapter\aggregator, \countable
 
 			if ($this->testsToRun > 0)
 			{
-				if ($runInChildProcess === false)
+				$this->phpCode =
+					'<?php ' .
+					'ob_start();' .
+					'define(\'' . __NAMESPACE__ . '\autorun\', false);' .
+					'require \'' . $this->path . '\';' .
+					'$test = new ' . $this->class . '();' .
+					'$test->setLocale(new ' . get_class($this->locale) . '(' . $this->locale->get() . '));' .
+					'$test->setPhpPath(\'' . $this->getPhpPath() . '\');' .
+					($this->codeCoverageIsEnabled() === true ? '' : '$test->disableCodeCoverage();') .
+					'$test->runTestMethod($method = \'%s\');' .
+					'echo serialize($test->getScore()->addOutput(\'' . $this->class . '\', $method, ob_get_clean()));' .
+					'?>'
+				;
+
+				$null = null;
+
+				try
 				{
-					foreach ($this->runTestMethods as $testMethod)
+					$this->callObservers(self::beforeSetUp);
+					$this->setUp();
+					$this->callObservers(self::afterSetUp);
+
+					while (sizeof($this->runChild()->children) > 0)
 					{
-						$this->runTestMethod($testMethod);
-					}
-				}
-				else
-				{
-					$this->phpCode =
-						'<?php ' .
-						'ob_start();' .
-						'define(\'' . __NAMESPACE__ . '\autorun\', false);' .
-						'require \'' . $this->path . '\';' .
-						'$test = new ' . $this->class . '();' .
-						'$test->setLocale(new ' . get_class($this->locale) . '(' . $this->locale->get() . '));' .
-						'$test->setPhpPath(\'' . $this->getPhpPath() . '\');' .
-						($this->codeCoverageIsEnabled() === true ? '' : '$test->disableCodeCoverage();') .
-						'$test->run(array($method = \'%s\'), false);' .
-						'echo serialize($test->getScore()->addOutput(\'' . $this->class . '\', $method, ob_get_clean()));' .
-						'?>'
-					;
+						$children = $this->children;
+						$this->children = array();
 
-					$null = null;
-
-					try
-					{
-						$this->callObservers(self::beforeSetUp);
-						$this->setUp();
-						$this->callObservers(self::afterSetUp);
-
-						while (sizeof($this->runChild()->children) > 0)
+						foreach ($children as $testMethod => $child)
 						{
-							$children = $this->children;
-							$this->children = array();
+							$child[2] .= stream_get_contents($child[1][1]);
+							$child[3] .= stream_get_contents($child[1][2]);
 
-							foreach ($children as $testMethod => $child)
+							$phpStatus = proc_get_status($child[0]);
+
+							if ($phpStatus['running'] === true)
 							{
-								$phpStatus = proc_get_status($child[0]);
+								$this->children[$testMethod] = $child;
+							}
+							else
+							{
+								fclose($child[1][1]);
+								fclose($child[1][2]);
 
-								if ($phpStatus['running'] === true)
+								proc_close($child[0]);
+
+								$this->currentMethod = $testMethod;
+								$this->callObservers(self::afterTestMethod);
+								$this->currentMethod = null;
+
+								switch ($phpStatus['exitcode'])
 								{
-									$this->children[$testMethod] = $child;
+									case 126:
+									case 127:
+										throw new exceptions\runtime('Unable to execute test with \'' . $this->getPhpPath() . '\'');
 								}
-								else
+
+								$score = new score();
+
+								if ($child[2] !== '')
 								{
-									$child[3] .= stream_get_contents($child[1][2]);
-									fclose($child[1][2]);
+									$score = @unserialize($child[2]);
 
-									$child[2] .= stream_get_contents($child[1][1]);
-									fclose($child[1][1]);
-
-									proc_close($child[0]);
-
-									$this->currentMethod = $testMethod;
-									$this->callObservers(self::afterTestMethod);
-									$this->currentMethod = null;
-
-									switch ($phpStatus['exitcode'])
+									if ($score instanceof score === false)
 									{
-										case 126:
-										case 127:
-											throw new exceptions\runtime('Unable to execute test with \'' . $this->getPhpPath() . '\'');
+										$score = new score();
 									}
-
-									$score = new score();
-
-									if ($child[2] !== '')
-									{
-										$score = @unserialize($child[2]);
-
-										if ($score instanceof score === false)
-										{
-											$score = new score();
-										}
-									}
-
-									if ($child[3] !== '')
-									{
-										if (preg_match_all('/([^:]+): (.+) in (.+) on line ([0-9]+)/', trim($child[3]), $errors, PREG_SET_ORDER) === 0)
-										{
-											$score->addError($this->path, null, $this->class, $testMethod, 'UNKNOWN', $child[3]);
-										}
-										else foreach ($errors as $error)
-										{
-											$score->addError($this->path, null, $this->class, $testMethod, $error[1], $error[2], $error[3], $error[4]);
-										}
-									}
-
-									if ($score->getFailNumber() > 0)
-									{
-										$this->callObservers(self::fail);
-									}
-
-									if ($score->getErrorNumber() > 0)
-									{
-										$this->callObservers(self::error);
-									}
-
-									if ($score->getExceptionNumber() > 0)
-									{
-										$this->callObservers(self::exception);
-									}
-
-									if ($score->getPassNumber() > 0)
-									{
-										$this->callObservers(self::success);
-									}
-
-									$this->score->merge($score);
 								}
+
+								if ($child[3] !== '')
+								{
+									if (preg_match_all('/([^:]+): (.+) in (.+) on line ([0-9]+)/', trim($child[3]), $errors, PREG_SET_ORDER) === 0)
+									{
+										$score->addError($this->path, null, $this->class, $testMethod, 'UNKNOWN', $child[3]);
+									}
+									else foreach ($errors as $error)
+									{
+										$score->addError($this->path, null, $this->class, $testMethod, $error[1], $error[2], $error[3], $error[4]);
+									}
+								}
+
+								if ($score->getFailNumber() > 0)
+								{
+									$this->callObservers(self::fail);
+								}
+
+								if ($score->getErrorNumber() > 0)
+								{
+									$this->callObservers(self::error);
+								}
+
+								if ($score->getExceptionNumber() > 0)
+								{
+									$this->callObservers(self::exception);
+								}
+
+								if ($score->getPassNumber() > 0)
+								{
+									$this->callObservers(self::success);
+								}
+
+								$this->score->merge($score);
 							}
 						}
-
-						$this
-							->callObservers(self::beforeTearDown)
-							->tearDown()
-							->callObservers(self::afterTearDown)
-						;
 					}
-					catch (\exception $exception)
-					{
-						$this
-							->callObservers(self::beforeTearDown)
-							->tearDown()
-							->callObservers(self::afterTearDown)
-						;
 
-						throw $exception;
-					}
+					$this
+						->callObservers(self::beforeTearDown)
+						->tearDown()
+						->callObservers(self::afterTearDown)
+					;
+				}
+				catch (\exception $exception)
+				{
+					$this
+						->callObservers(self::beforeTearDown)
+						->tearDown()
+						->callObservers(self::afterTearDown)
+					;
+
+					throw $exception;
 				}
 			}
-
-			$this->callObservers(self::runStop);
 		}
+
+		$this->callObservers(self::runStop);
 
 		return $this;
 	}
@@ -618,78 +608,81 @@ abstract class test implements observable, adapter\aggregator, \countable
 		return $this;
 	}
 
-	protected function runTestMethod($testMethod)
+	public function runTestMethod($testMethod)
 	{
-		set_error_handler(array($this, 'errorHandler'));
-
-		ini_set('display_errors', 'stderr');
-		ini_set('log_errors', 'Off');
-		ini_set('log_errors_max_len', '0');
-
-		$this->currentMethod = $testMethod;
-
-		try
+		if ($this->methodIsIgnored($testMethod) === false)
 		{
+			set_error_handler(array($this, 'errorHandler'));
+
+			ini_set('display_errors', 'stderr');
+			ini_set('log_errors', 'Off');
+			ini_set('log_errors_max_len', '0');
+
+			$this->currentMethod = $testMethod;
+
 			try
 			{
-				$this->beforeTestMethod($this->currentMethod);
-
-				ob_start();
-
-				if ($this->codeCoverageIsEnabled() === true)
+				try
 				{
-					xdebug_start_code_coverage(XDEBUG_CC_UNUSED | XDEBUG_CC_DEAD_CODE);
+					$this->beforeTestMethod($testMethod);
+
+					ob_start();
+
+					if ($this->codeCoverageIsEnabled() === true)
+					{
+						xdebug_start_code_coverage(XDEBUG_CC_UNUSED | XDEBUG_CC_DEAD_CODE);
+					}
+
+					$time = microtime(true);
+					$memory = memory_get_usage(true);
+
+					$this->{$testMethod}();
+
+					$memoryUsage = memory_get_usage(true) - $memory;
+					$duration = microtime(true) - $time;
+
+					if ($this->codeCoverageIsEnabled() === true)
+					{
+						$this->score->getCoverage()->addXdebugDataForTest($this, xdebug_get_code_coverage());
+						xdebug_stop_code_coverage();
+					}
+
+					$this->score
+						->addMemoryUsage($this->class, $this->currentMethod, $memoryUsage)
+						->addDuration($this->class, $this->currentMethod, $duration)
+						->addOutput($this->class, $this->currentMethod, ob_get_clean())
+					;
+
+					$this->afterTestMethod($testMethod);
 				}
-
-				$time = microtime(true);
-				$memory = memory_get_usage(true);
-
-				$this->{$testMethod}();
-
-				$memoryUsage = memory_get_usage(true) - $memory;
-				$duration = microtime(true) - $time;
-
-				if ($this->codeCoverageIsEnabled() === true)
+				catch (\exception $exception)
 				{
-					$this->score->getCoverage()->addXdebugDataForTest($this, xdebug_get_code_coverage());
-					xdebug_stop_code_coverage();
+					$this->score->addOutput($this->class, $this->currentMethod, ob_get_clean());
+					$this->score->addDuration($this->class, $this->currentMethod, microtime(true) - $time);
+
+					throw $exception;
 				}
-
-				$this->score
-					->addMemoryUsage($this->class, $this->currentMethod, $memoryUsage)
-					->addDuration($this->class, $this->currentMethod, $duration)
-					->addOutput($this->class, $this->currentMethod, ob_get_clean())
-				;
-
-				$this->afterTestMethod($testMethod);
+			}
+			catch (asserter\exception $exception)
+			{
+				if ($this->score->failExists($exception) === false)
+				{
+					$this->addExceptionToScore($exception);
+				}
 			}
 			catch (\exception $exception)
 			{
-				$this->score->addOutput($this->class, $this->currentMethod, ob_get_clean());
-				$this->score->addDuration($this->class, $this->currentMethod, microtime(true) - $time);
-
-				throw $exception;
-			}
-		}
-		catch (asserter\exception $exception)
-		{
-			if ($this->score->failExists($exception) === false)
-			{
 				$this->addExceptionToScore($exception);
 			}
+
+			$this->currentMethod = null;
+
+			restore_error_handler();
+
+			ini_restore('display_errors');
+			ini_restore('log_errors');
+			ini_restore('log_errors_max_len');
 		}
-		catch (\exception $exception)
-		{
-			$this->addExceptionToScore($exception);
-		}
-
-		$this->currentMethod = null;
-
-		restore_error_handler();
-
-		ini_restore('display_errors');
-		ini_restore('log_errors');
-		ini_restore('log_errors_max_len');
 
 		return $this;
 	}
@@ -779,6 +772,9 @@ abstract class test implements observable, adapter\aggregator, \countable
 			fwrite($pipes[0], sprintf($this->phpCode, $currentMethod));
 			fclose($pipes[0]);
 			unset($pipes[0]);
+
+			stream_set_blocking($pipes[1], 0);
+			stream_set_blocking($pipes[2], 0);
 
 			$this->children[$currentMethod] = array(
 				$php,

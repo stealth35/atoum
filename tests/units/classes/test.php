@@ -549,6 +549,17 @@ namespace mageekguy\atoum\tests\units
 			;
 		}
 
+		public function testMethodIsIgnored()
+		{
+			$test = new emptyTest();
+
+			$this->assert
+				->exception(function() use ($test, & $method) { $test->methodIsIgnored($method = uniqid()); })
+					->isInstanceOf('mageekguy\atoum\exceptions\logic\invalidArgument')
+					->hasMessage('Test method ' . get_class($test) . '::' . $method . '() is unknown')
+			;
+		}
+
 		public function testRun()
 		{
 			$this->mockGenerator
