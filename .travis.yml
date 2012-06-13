@@ -4,4 +4,4 @@ php:
   - 5.3
   - 5.4
 
-script: php scripts/runner.php --test-it -url -ncc
+script: php scripts/runner.php --test-it -ulr -ncc
